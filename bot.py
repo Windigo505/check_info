@@ -6,7 +6,7 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-BOT_TOKEN = "8325253736:AAFY5kaSu81zLVsXHm09LhCCCQfT2e5YeRQ"
+BOT_TOKEN = "8325253736:AAHWhYq-XEixT9OsqK3kkLPd6HuDYvJdEFI"
 CHECK_INTERVAL = 300  # каждые 5 минут
 SITE_URL = "https://comicconastana.kz"
 API_BASE = "https://widget.afisha.yandex.kz/api/tickets/v1"
