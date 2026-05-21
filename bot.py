@@ -1,16 +1,17 @@
 import httpx
 import hashlib
 import re
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from bs4 import BeautifulSoup
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 BOT_TOKEN = "8325253736:AAHWhYq-XEixT9OsqK3kkLPd6HuDYvJdEFI"
-CHECK_INTERVAL = 300  # каждые 5 минут
+CHECK_INTERVAL = 300
 SITE_URL = "https://comicconastana.kz"
 API_BASE = "https://widget.afisha.yandex.kz/api/tickets/v1"
- 
 CLIENT_KEY = "95ce097f-864a-49a6-b84b-847c07c2d8af"
 HEADERS = {
     "Referer": "https://widget.afisha.yandex.kz/",
@@ -19,6 +20,27 @@ HEADERS = {
 }
 
 
+# =====================
+# HEALTH SERVER для Fly.io
+# =====================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
+
+def run_health_server():
+    server = HTTPServer(("0.0.0.0", 8080), HealthHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_health_server, daemon=True).start()
+
+
+# =====================
+# БИЛЕТЫ
+# =====================
 def fetch_sessions():
     r = httpx.get(
         f"{API_BASE}/events/832469/venues/sessions",
@@ -73,8 +95,6 @@ def format_message(sessions):
     lines.append(f"🕐 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
     return "\n".join(lines)
 
- 
-
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Получаю данные...")
@@ -84,7 +104,11 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(message, parse_mode="Markdown")
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
-# Хранилище предыдущего состояния
+
+
+# =====================
+# САЙТ
+# =====================
 previous_state = {}
 
 
@@ -96,26 +120,20 @@ def fetch_site():
 def extract_state(html):
     soup = BeautifulSoup(html, "html.parser")
 
-    # Все ссылки
     links = set()
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
         if href and not href.startswith("#"):
             links.add(href)
 
-    # Все картинки
     images = set()
     for img in soup.find_all("img", src=True):
         src = img["src"].strip()
         if src:
             images.add(src)
 
-    # Весь текст (очищенный)
     text = soup.get_text(separator=" ", strip=True)
-    # Убираем пробелы и нормализуем
     text = re.sub(r'\s+', ' ', text).strip()
-
-    # Хэш всей страницы
     page_hash = hashlib.md5(html.encode()).hexdigest()
 
     return {
@@ -130,9 +148,8 @@ def compare_states(old, new):
     changes = []
 
     if old["hash"] == new["hash"]:
-        return []  # ничего не изменилось
+        return []
 
-    # Новые ссылки
     new_links = new["links"] - old["links"]
     removed_links = old["links"] - new["links"]
     for link in new_links:
@@ -140,7 +157,6 @@ def compare_states(old, new):
     for link in removed_links:
         changes.append(f"❌ Удалена ссылка: `{link}`")
 
-    # Новые картинки
     new_images = new["images"] - old["images"]
     removed_images = old["images"] - new["images"]
     for img in new_images:
@@ -148,7 +164,6 @@ def compare_states(old, new):
     for img in removed_images:
         changes.append(f"🗑 Удалена картинка: `{img}`")
 
-    # Изменения текста
     if old["text"] != new["text"]:
         old_words = set(old["text"].split())
         new_words = set(new["text"].split())
@@ -162,14 +177,16 @@ def compare_states(old, new):
     return changes
 
 
-# === КОМАНДЫ ===
+# =====================
+# КОМАНДЫ
+# =====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 *Comic Con Astana — мониторинг сайта*\n\n"
-        "/check\_tickets — статистика билетов\n"
-        "/check\_site — проверить сайт сейчас\n"
-        "/monitor\_site — запустить мониторинг сайта\n"
-        "/stop\_site — остановить мониторинг",
+        "👋 *Comic Con Astana — мониторинг*\n\n"
+        "/check_tickets — статистика билетов\n"
+        "/check_site — проверить сайт\n"
+        "/monitor_site — автомониторинг сайта\n"
+        "/stop_site — остановить мониторинг",
         parse_mode="Markdown"
     )
 
@@ -213,7 +230,6 @@ async def cmd_monitor_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Мониторинг уже запущен.")
         return
 
-    # Сохраняем начальное состояние
     try:
         html = fetch_site()
         state = extract_state(html)
@@ -253,9 +269,11 @@ async def cmd_monitor_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка мониторинга: {e}")
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ Ошибка мониторинга: {e}"
+                )
 
-    import asyncio
     task = asyncio.create_task(monitor_loop())
     context.chat_data["site_task"] = task
 
@@ -264,7 +282,7 @@ async def cmd_stop_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task = context.chat_data.get("site_task")
     if task and not task.done():
         task.cancel()
-        await update.message.reply_text("🛑 Мониторинг сайта остановлен.")
+        await update.message.reply_text("🛑 Мониторинг остановлен.")
     else:
         await update.message.reply_text("⚠️ Мониторинг не был запущен.")
 
@@ -282,4 +300,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
