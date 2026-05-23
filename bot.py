@@ -10,8 +10,12 @@ BOT_TOKEN = "8325253736:AAH0GRL9SkDiUaytidDLfn7XMVJIBwFpT2E"
 CHECK_INTERVAL = 300  # каждые 5 минут
 SITE_URL = "https://comicconastana.kz"
 API_BASE = "https://widget.afisha.yandex.kz/api/tickets/v1"
- 
+
 CLIENT_KEY = "95ce097f-864a-49a6-b84b-847c07c2d8af"
+
+# ⬇️ Вставь сюда свой URL Worker'а
+WORKER_URL = "https://hidden-union-4445.daniil17032008f.workers.dev/"
+
 HEADERS = {
     "Referer": "https://widget.afisha.yandex.kz/",
     "Origin": "https://widget.afisha.yandex.kz",
@@ -22,11 +26,11 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
-
 def fetch_sessions():
     r = httpx.get(
-        f"{API_BASE}/events/832469/venues/sessions",
+        WORKER_URL,
         params={
+            "_target": f"{API_BASE}/events/832469/venues/sessions",
             "clientKey": CLIENT_KEY,
             "offset": "0", "limit": "20",
             "dateFrom": "2026-08-06",
@@ -36,13 +40,20 @@ def fetch_sessions():
         },
         headers=HEADERS
     )
+    print("Status:", r.status_code)
+    print("Content-Encoding:", r.headers.get("content-encoding"))
+    print("Raw:", r.content[:100])
     return r.json()["result"]["venues"]["items"][0]["sessions"]
 
 
 def fetch_levels(session_key):
     r = httpx.get(
-        f"{API_BASE}/sessions/{session_key}/hallplan/async",
-        params={"clientKey": CLIENT_KEY, "req_number": "1"},
+        WORKER_URL,
+        params={
+            "_target": f"{API_BASE}/sessions/{session_key}/hallplan/async",
+            "clientKey": CLIENT_KEY,
+            "req_number": "1"
+        },
         headers=HEADERS
     )
     return r.json()["result"]["hallplan"]["levels"]
@@ -77,8 +88,6 @@ def format_message(sessions):
     lines.append(f"🕐 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
     return "\n".join(lines)
 
- 
-
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Получаю данные...")
@@ -88,6 +97,8 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(message, parse_mode="Markdown")
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {e}")
+
+
 # Хранилище предыдущего состояния
 previous_state = {}
 
@@ -100,26 +111,21 @@ def fetch_site():
 def extract_state(html):
     soup = BeautifulSoup(html, "html.parser")
 
-    # Все ссылки
     links = set()
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
         if href and not href.startswith("#"):
             links.add(href)
 
-    # Все картинки
     images = set()
     for img in soup.find_all("img", src=True):
         src = img["src"].strip()
         if src:
             images.add(src)
 
-    # Весь текст (очищенный)
     text = soup.get_text(separator=" ", strip=True)
-    # Убираем пробелы и нормализуем
     text = re.sub(r'\s+', ' ', text).strip()
 
-    # Хэш всей страницы
     page_hash = hashlib.md5(html.encode()).hexdigest()
 
     return {
@@ -134,9 +140,8 @@ def compare_states(old, new):
     changes = []
 
     if old["hash"] == new["hash"]:
-        return []  # ничего не изменилось
+        return []
 
-    # Новые ссылки
     new_links = new["links"] - old["links"]
     removed_links = old["links"] - new["links"]
     for link in new_links:
@@ -144,7 +149,6 @@ def compare_states(old, new):
     for link in removed_links:
         changes.append(f"❌ Удалена ссылка: `{link}`")
 
-    # Новые картинки
     new_images = new["images"] - old["images"]
     removed_images = old["images"] - new["images"]
     for img in new_images:
@@ -152,7 +156,6 @@ def compare_states(old, new):
     for img in removed_images:
         changes.append(f"🗑 Удалена картинка: `{img}`")
 
-    # Изменения текста
     if old["text"] != new["text"]:
         old_words = set(old["text"].split())
         new_words = set(new["text"].split())
@@ -166,7 +169,6 @@ def compare_states(old, new):
     return changes
 
 
-# === КОМАНДЫ ===
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *Comic Con Astana — мониторинг сайта*\n\n"
@@ -217,7 +219,6 @@ async def cmd_monitor_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Мониторинг уже запущен.")
         return
 
-    # Сохраняем начальное состояние
     try:
         html = fetch_site()
         state = extract_state(html)
@@ -259,7 +260,6 @@ async def cmd_monitor_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка мониторинга: {e}")
 
-    import asyncio
     task = asyncio.create_task(monitor_loop())
     context.chat_data["site_task"] = task
 
@@ -285,11 +285,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def run_web():
     HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
-    
 def main():
-    # Запускаем веб-сервер в фоне
+        # Запускаем веб-сервер в фоне
     Thread(target=run_web, daemon=True).start()
-    
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("check_site", cmd_check_site))
@@ -302,8 +300,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-if __name__ == "__main__":
-    main()
-
