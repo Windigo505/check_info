@@ -9,7 +9,7 @@ from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import asyncio
 
-BOT_TOKEN = "8325253736:AAELcVhZOfv9tX4G_-FwVYXmPHV-vQxeOmI"
+BOT_TOKEN = "8325253736:AAF3v3Y_Nbj2XJg51JthGhTtF_xoMMlHOSI"
 CHECK_INTERVAL = 300
 TICKET_CHECK_INTERVAL = 60  # каждую минуту
 SITE_URL = "https://comicconastana.kz"
