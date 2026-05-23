@@ -1,50 +1,36 @@
 import httpx
 import hashlib
 import re
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from bs4 import BeautifulSoup
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-BOT_TOKEN = "8325253736:AAFx4VPufPmX2aQ7iCGcynQiQ6QrBMwQfh0"
-CHECK_INTERVAL = 300
+BOT_TOKEN = "8325253736:AAH0GRL9SkDiUaytidDLfn7XMVJIBwFpT2E"
+CHECK_INTERVAL = 300  # каждые 5 минут
 SITE_URL = "https://comicconastana.kz"
 API_BASE = "https://widget.afisha.yandex.kz/api/tickets/v1"
+
 CLIENT_KEY = "95ce097f-864a-49a6-b84b-847c07c2d8af"
+
+# ⬇️ Вставь сюда свой URL Worker'а
+WORKER_URL = "https://hidden-union-4445.daniil17032008f.workers.dev/"
+
 HEADERS = {
     "Referer": "https://widget.afisha.yandex.kz/",
     "Origin": "https://widget.afisha.yandex.kz",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ru-RU,ru;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
 }
 
-
-# =====================
-# HEALTH SERVER для Fly.io
-# =====================
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args):
-        pass
-
-def run_health_server():
-    server = HTTPServer(("0.0.0.0", 8080), HealthHandler)
-    server.serve_forever()
-
-threading.Thread(target=run_health_server, daemon=True).start()
-
-
-# =====================
-# БИЛЕТЫ
-# =====================
 def fetch_sessions():
     r = httpx.get(
-        f"{API_BASE}/events/832469/venues/sessions",
+        WORKER_URL,
         params={
+            "_target": f"{API_BASE}/events/832469/venues/sessions",
             "clientKey": CLIENT_KEY,
             "offset": "0", "limit": "20",
             "dateFrom": "2026-08-06",
@@ -54,13 +40,20 @@ def fetch_sessions():
         },
         headers=HEADERS
     )
+    print("Status:", r.status_code)
+    print("Content-Encoding:", r.headers.get("content-encoding"))
+    print("Raw:", r.content[:100])
     return r.json()["result"]["venues"]["items"][0]["sessions"]
 
 
 def fetch_levels(session_key):
     r = httpx.get(
-        f"{API_BASE}/sessions/{session_key}/hallplan/async",
-        params={"clientKey": CLIENT_KEY, "req_number": "1"},
+        WORKER_URL,
+        params={
+            "_target": f"{API_BASE}/sessions/{session_key}/hallplan/async",
+            "clientKey": CLIENT_KEY,
+            "req_number": "1"
+        },
         headers=HEADERS
     )
     return r.json()["result"]["hallplan"]["levels"]
@@ -106,9 +99,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {e}")
 
 
-# =====================
-# САЙТ
-# =====================
+# Хранилище предыдущего состояния
 previous_state = {}
 
 
@@ -134,6 +125,7 @@ def extract_state(html):
 
     text = soup.get_text(separator=" ", strip=True)
     text = re.sub(r'\s+', ' ', text).strip()
+
     page_hash = hashlib.md5(html.encode()).hexdigest()
 
     return {
@@ -177,16 +169,13 @@ def compare_states(old, new):
     return changes
 
 
-# =====================
-# КОМАНДЫ
-# =====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 *Comic Con Astana — мониторинг*\n\n"
-        "/check_tickets — статистика билетов\n"
-        "/check_site — проверить сайт\n"
-        "/monitor_site — автомониторинг сайта\n"
-        "/stop_site — остановить мониторинг",
+        "👋 *Comic Con Astana — мониторинг сайта*\n\n"
+        "/check\_tickets — статистика билетов\n"
+        "/check\_site — проверить сайт сейчас\n"
+        "/monitor\_site — запустить мониторинг сайта\n"
+        "/stop\_site — остановить мониторинг",
         parse_mode="Markdown"
     )
 
@@ -269,10 +258,7 @@ async def cmd_monitor_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"❌ Ошибка мониторинга: {e}"
-                )
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка мониторинга: {e}")
 
     task = asyncio.create_task(monitor_loop())
     context.chat_data["site_task"] = task
@@ -282,7 +268,7 @@ async def cmd_stop_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task = context.chat_data.get("site_task")
     if task and not task.done():
         task.cancel()
-        await update.message.reply_text("🛑 Мониторинг остановлен.")
+        await update.message.reply_text("🛑 Мониторинг сайта остановлен.")
     else:
         await update.message.reply_text("⚠️ Мониторинг не был запущен.")
 
