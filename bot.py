@@ -5,15 +5,17 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import asyncio
 
-BOT_TOKEN = "8325253736:AAE8-MvPXMt3usFyy7ViwMiTXNK9hI0ic7s"
-CHECK_INTERVAL = 300  # каждые 5 минут
+BOT_TOKEN = "8325253736:AAHr5y6JLxKRMbT7GiPsgLQ8ZtXBUhYjYqw"
+CHECK_INTERVAL = 300
+TICKET_CHECK_INTERVAL = 60  # каждую минуту
 SITE_URL = "https://comicconastana.kz"
 API_BASE = "https://widget.afisha.yandex.kz/api/tickets/v1"
 
 CLIENT_KEY = "95ce097f-864a-49a6-b84b-847c07c2d8af"
-
-# ⬇️ Вставь сюда свой URL Worker'а
 WORKER_URL = "https://hidden-union-4445.daniil17032008f.workers.dev/"
 
 HEADERS = {
@@ -25,6 +27,15 @@ HEADERS = {
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
 }
+
+# Хранилище предыдущего состояния билетов
+previous_tickets = {}
+# Подписчики трекинга: chat_id -> True
+ticket_subscribers = {}
+# Задача трекинга
+ticket_task = None
+
+
 
 def fetch_sessions():
     r = httpx.get(
@@ -38,11 +49,11 @@ def fetch_sessions():
             "regionId": "163",
             "req_number": "2"
         },
-        headers=HEADERS
+        headers={**HEADERS, "Accept-Encoding": "identity"}
     )
-    print("Status:", r.status_code)
-    print("Content-Encoding:", r.headers.get("content-encoding"))
-    print("Raw:", r.content[:100])
+    print("STATUS:", r.status_code)
+    print("HEADERS:", dict(r.headers))
+    print("TEXT:", r.text[:500])
     return r.json()["result"]["venues"]["items"][0]["sessions"]
 
 
@@ -89,6 +100,123 @@ def format_message(sessions):
     return "\n".join(lines)
 
 
+def get_ticket_snapshot():
+    """Получить снимок всех билетов по датам и категориям"""
+    sessions = fetch_sessions()
+    snapshot = {}
+    for s in sessions:
+        date = s["presentationSessionDate"]
+        status = s["saleStatus"]
+        total = s["availableSeatCount"]
+
+        levels_data = {}
+        try:
+            levels = fetch_levels(s["key"])
+            for level in levels:
+                levels_data[level["name"]] = {
+                    "count": level["availableSeatCount"],
+                    "price": level["prices"][0]["value"] // 100
+                }
+        except Exception:
+            pass
+
+        snapshot[date] = {
+            "status": status,
+            "total": total,
+            "levels": levels_data
+        }
+    return snapshot
+
+
+def compare_tickets(old, new):
+    """Сравнить два снимка и вернуть список изменений"""
+    changes = []
+
+    for date in new:
+        if date not in old:
+            continue
+
+        old_day = old[date]
+        new_day = new[date]
+
+        # Статус изменился на sold out
+        if old_day["status"] == "available" and new_day["status"] != "available":
+            changes.append(f"🔴 *{date}* — билеты ЗАКОНЧИЛИСЬ (sold out)!")
+
+        # Статус вернулся
+        elif old_day["status"] != "available" and new_day["status"] == "available":
+            changes.append(f"🟢 *{date}* — билеты снова в продаже!")
+
+        # Общее количество
+        old_total = old_day["total"]
+        new_total = new_day["total"]
+        diff = new_total - old_total
+
+        if diff < 0:
+            changes.append(f"📉 *{date}* — куплено билетов: `{abs(diff)}` (осталось: `{new_total:,}`)")
+        elif diff > 0:
+            changes.append(f"📈 *{date}* — добавлено билетов: `{diff}` (стало: `{new_total:,}`)")
+
+        # По категориям
+        for name in new_day["levels"]:
+            if name not in old_day["levels"]:
+                continue
+
+            old_count = old_day["levels"][name]["count"]
+            new_count = new_day["levels"][name]["count"]
+            cat_diff = new_count - old_count
+
+            if cat_diff < 0:
+                changes.append(f"   🎫 *{name}* ({date}): куплено `{abs(cat_diff)}` → осталось `{new_count:,}`")
+            elif cat_diff > 0:
+                changes.append(f"   ➕ *{name}* ({date}): добавлено `{cat_diff}` → стало `{new_count:,}`")
+
+            # Категория заканчивается (меньше 50 мест)
+            if old_count >= 50 and new_count < 50 and new_count > 0:
+                changes.append(f"   ⚠️ *{name}* ({date}): осталось мало мест — `{new_count}`!")
+
+            # Категория закончилась
+            if old_count > 0 and new_count == 0:
+                changes.append(f"   ❌ *{name}* ({date}): билеты закончились!")
+
+    return changes
+
+
+async def ticket_monitor_loop(bot):
+    """Фоновый цикл мониторинга билетов"""
+    global previous_tickets
+
+    while True:
+        await asyncio.sleep(TICKET_CHECK_INTERVAL)
+        try:
+            new_snapshot = get_ticket_snapshot()
+
+            if not previous_tickets:
+                previous_tickets = new_snapshot
+                continue
+
+            changes = compare_tickets(previous_tickets, new_snapshot)
+            previous_tickets = new_snapshot
+
+            if changes and ticket_subscribers:
+                text = "🚨 *Изменения в билетах Comic Con Astana!*\n\n"
+                text += "\n".join(changes[:30])
+                text += f"\n\n🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+
+                for chat_id in list(ticket_subscribers.keys()):
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=text,
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass
+
+
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Получаю данные...")
     try:
@@ -99,7 +227,78 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {e}")
 
 
-# Хранилище предыдущего состояния
+async def cmd_track_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global previous_tickets, ticket_task
+
+    chat_id = update.effective_chat.id
+    ticket_subscribers[chat_id] = True
+
+    msg = await update.message.reply_text("🔄 Запускаю трекинг...")
+
+    try:
+        snapshot = get_ticket_snapshot()
+        previous_tickets = snapshot
+
+        # Запускаем фоновый цикл если ещё не запущен
+        if ticket_task is None or ticket_task.done():
+            ticket_task = asyncio.create_task(
+                ticket_monitor_loop(context.bot)
+            )
+
+        lines = ["✅ *Трекинг билетов запущен!*\n"]
+        lines.append("Отслеживаю:")
+        lines.append("• 📉 Покупки билетов")
+        lines.append("• 📈 Добавление билетов")
+        lines.append("• ❌ Окончание билетов")
+        lines.append("• 🔴 Смена статуса на sold out")
+        lines.append(f"\n🕐 Проверка каждую минуту")
+        lines.append(f"\nТекущее состояние:")
+
+        for date, data in snapshot.items():
+            status_emoji = "🟢" if data["status"] == "available" else "🔴"
+            lines.append(f"{status_emoji} *{date}* — `{data['total']:,}` мест")
+
+        await msg.edit_text("\n".join(lines), parse_mode="Markdown")
+
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {e}")
+
+
+async def cmd_track_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
+    if chat_id in ticket_subscribers:
+        del ticket_subscribers[chat_id]
+        await update.message.reply_text("🛑 Трекинг билетов остановлен.")
+    else:
+        await update.message.reply_text("⚠️ Трекинг не был запущен.")
+
+
+async def cmd_track_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    msg = await update.message.reply_text("🔄 Получаю текущее состояние...")
+
+    try:
+        snapshot = get_ticket_snapshot()
+        lines = ["📊 *Текущее состояние билетов*\n"]
+
+        for date, data in snapshot.items():
+            status_emoji = "🟢" if data["status"] == "available" else "🔴"
+            lines.append(f"{status_emoji} *{date}* — всего: `{data['total']:,}`")
+            for name, level in data["levels"].items():
+                lines.append(f"   🎫 {name} — `{level['price']:,} ₸` | `{level['count']:,}` мест")
+            lines.append("")
+
+        tracking = "✅ активен" if chat_id in ticket_subscribers else "❌ не запущен"
+        lines.append(f"🔍 Трекинг: {tracking}")
+        lines.append(f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+
+        await msg.edit_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {e}")
+
+
+# Хранилище предыдущего состояния сайта
 previous_state = {}
 
 
@@ -125,7 +324,6 @@ def extract_state(html):
 
     text = soup.get_text(separator=" ", strip=True)
     text = re.sub(r'\s+', ' ', text).strip()
-
     page_hash = hashlib.md5(html.encode()).hexdigest()
 
     return {
@@ -138,7 +336,6 @@ def extract_state(html):
 
 def compare_states(old, new):
     changes = []
-
     if old["hash"] == new["hash"]:
         return []
 
@@ -171,11 +368,16 @@ def compare_states(old, new):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 *Comic Con Astana — мониторинг сайта*\n\n"
-        "/check\_tickets — статистика билетов\n"
-        "/check\_site — проверить сайт сейчас\n"
-        "/monitor\_site — запустить мониторинг сайта\n"
-        "/stop\_site — остановить мониторинг",
+        "👋 *Comic Con Astana — мониторинг*\n\n"
+        "📊 *Билеты:*\n"
+        "/check\\_tickets — статистика билетов\n"
+        "/track\\_start — запустить трекинг билетов\n"
+        "/track\\_stop — остановить трекинг\n"
+        "/track\\_status — текущее состояние\n\n"
+        "🌐 *Сайт:*\n"
+        "/check\\_site — проверить сайт сейчас\n"
+        "/monitor\\_site — запустить мониторинг сайта\n"
+        "/stop\\_site — остановить мониторинг",
         parse_mode="Markdown"
     )
 
@@ -234,8 +436,6 @@ async def cmd_monitor_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка при запуске: {e}")
         return
 
-    import asyncio
-
     async def monitor_loop():
         while True:
             await asyncio.sleep(CHECK_INTERVAL)
@@ -257,8 +457,8 @@ async def cmd_monitor_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка мониторинга: {e}")
+            except Exception:
+                pass
 
     task = asyncio.create_task(monitor_loop())
     context.chat_data["site_task"] = task
@@ -272,28 +472,33 @@ async def cmd_stop_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("⚠️ Мониторинг не был запущен.")
 
-from threading import Thread
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
+
     def log_message(self, *args):
         pass
 
+
 def run_web():
     HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+
+
 def main():
-        # Запускаем веб-сервер в фоне
     Thread(target=run_web, daemon=True).start()
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("check_site", cmd_check_site))
     app.add_handler(CommandHandler("monitor_site", cmd_monitor_site))
     app.add_handler(CommandHandler("stop_site", cmd_stop_site))
     app.add_handler(CommandHandler("check_tickets", cmd_check))
+    app.add_handler(CommandHandler("track_start", cmd_track_start))
+    app.add_handler(CommandHandler("track_stop", cmd_track_stop))
+    app.add_handler(CommandHandler("track_status", cmd_track_status))
     print("Бот запущен...")
     app.run_polling()
 
