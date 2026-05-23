@@ -9,7 +9,7 @@ from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import asyncio
 
-BOT_TOKEN = "8325253736:AAHr5y6JLxKRMbT7GiPsgLQ8ZtXBUhYjYqw"
+BOT_TOKEN = "8325253736:AAGO_n73zN08vGh_i0gN2IA8SDR9ZIKx_HI"
 CHECK_INTERVAL = 300
 TICKET_CHECK_INTERVAL = 60  # каждую минуту
 SITE_URL = "https://comicconastana.kz"
@@ -478,6 +478,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
 
     def log_message(self, *args):
         pass
