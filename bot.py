@@ -43,8 +43,7 @@ HEADERS = {
 ALLOWED_USERS = {
     int(x) for x in os.environ.get("ALLOWED_USERS", "").split(",") if x.strip()
 } or {
-    # 123456789,   # <- впиши сюда свой Telegram id
-    # 987654321,   # <- и id других разрешённых людей
+    1762280778
 }
 
 
