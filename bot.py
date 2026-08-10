@@ -435,8 +435,7 @@ async def cmd_getid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Доступна всем без ограничений — просто сообщает Telegram id пользователя."""
     user = update.effective_user
     await update.message.reply_text(
-        f'🆔 Ваш Telegram ID: `{user.id}`\n\n'
-        f'Отправьте этот номер администратору бота, чтобы получить доступ.',
+        f'🆔 Ваш Telegram ID: `{user.id}`'
         parse_mode='Markdown'
     )
 
