@@ -512,7 +512,7 @@ async def cmd_track_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═════════════════════════════════════════════════════════════════════════════
 #  КОМАНДЫ — САЙТ
 # ═════════════════════════════════════════════════════════════════════════════
-
+@restricted
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ALLOWED_USERS:
