@@ -1,7 +1,9 @@
+import os
 import httpx
 import hashlib
 import re
 import difflib
+from functools import wraps
 from bs4 import BeautifulSoup
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
@@ -11,7 +13,10 @@ from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import asyncio
 
+# ⚠️ Токен лучше вынести в переменную окружения:
+# BOT_TOKEN = os.environ["BOT_TOKEN"]
 BOT_TOKEN = "8325253736:AAFl045ZAY-v_UK9X98m62qboolhsMJRr9Q"
+
 CHECK_INTERVAL = 300
 TICKET_CHECK_INTERVAL = 60
 SITE_URL = "https://comicconastana.kz"
@@ -29,6 +34,32 @@ HEADERS = {
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
 }
+
+# ─── Доступ ────────────────────────────────────────────────────────────────
+# ID пользователей, которым разрешено пользоваться ботом.
+# Узнать свой id: написать @userinfobot в Telegram.
+# Можно задать через переменную окружения ALLOWED_USERS="123,456,789"
+# либо вписать напрямую в set() ниже.
+ALLOWED_USERS = {
+    int(x) for x in os.environ.get("ALLOWED_USERS", "").split(",") if x.strip()
+} or {
+    # 123456789,   # <- впиши сюда свой Telegram id
+    # 987654321,   # <- и id других разрешённых людей
+}
+
+
+def restricted(func):
+    """Декоратор: пропускает только пользователей из ALLOWED_USERS."""
+    @wraps(func)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user = update.effective_user
+        if not user or user.id not in ALLOWED_USERS:
+            if update.message:
+                await update.message.reply_text('⛔ У вас нет доступа к этому боту.')
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapped
+
 
 # ─── Шумовые паттерны — изменения, которые не несут смысла ───────────────────
 NOISE_PATTERNS = [
@@ -384,7 +415,11 @@ async def ticket_monitor_loop(bot):
                 text = '🚨 *Изменения в билетах Comic Con Astana!*\n\n'
                 text += '\n'.join(changes[:30])
                 text += f'\n\n🕐 {datetime.now().strftime("%d.%m.%Y %H:%M")}'
+                # Рассылаем только тем, кто в whitelist (на случай если id
+                # оказался удалён из списка уже после подписки)
                 for chat_id in list(ticket_subscribers.keys()):
+                    if chat_id not in ALLOWED_USERS:
+                        continue
                     try:
                         await bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown')
                     except Exception:
@@ -397,6 +432,7 @@ async def ticket_monitor_loop(bot):
 #  КОМАНДЫ — БИЛЕТЫ
 # ═════════════════════════════════════════════════════════════════════════════
 
+@restricted
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text('🔄 Получаю данные...')
     try:
@@ -406,6 +442,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f'❌ Ошибка: {e}')
 
 
+@restricted
 async def cmd_track_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global previous_tickets, ticket_task
     chat_id = update.effective_chat.id
@@ -429,6 +466,7 @@ async def cmd_track_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f'❌ Ошибка: {e}')
 
 
+@restricted
 async def cmd_track_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if chat_id in ticket_subscribers:
@@ -438,6 +476,7 @@ async def cmd_track_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text('⚠️ Трекинг не был запущен.')
 
 
+@restricted
 async def cmd_track_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     msg = await update.message.reply_text('🔄 Получаю текущее состояние...')
@@ -462,6 +501,7 @@ async def cmd_track_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  КОМАНДЫ — САЙТ
 # ═════════════════════════════════════════════════════════════════════════════
 
+@restricted
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         '👋 *Comic Con Astana — мониторинг*\n\n'
@@ -479,6 +519,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@restricted
 async def cmd_check_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text('🔄 Сканирую все страницы сайта...')
     try:
@@ -522,6 +563,7 @@ async def cmd_check_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f'❌ Ошибка: {e}')
 
 
+@restricted
 async def cmd_list_pages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not previous_site_states:
         await update.message.reply_text('⚠️ Сначала запустите /check\\_site или /monitor\\_site', parse_mode='Markdown')
@@ -533,6 +575,7 @@ async def cmd_list_pages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
 
 
+@restricted
 async def cmd_monitor_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
@@ -581,9 +624,12 @@ async def cmd_monitor_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text = '🚨 *Изменения на comicconastana.kz!*\n'
                     text += '\n'.join(all_changes[:25])
                     text += f'\n\n🔗 {SITE_URL}\n🕐 {datetime.now().strftime("%d.%m.%Y %H:%M")}'
-                    await context.bot.send_message(
-                        chat_id=chat_id, text=text, parse_mode='Markdown'
-                    )
+                    # chat_id зафиксирован на момент запуска — он и так
+                    # принадлежит разрешённому пользователю (проверено при /monitor_site)
+                    if chat_id in ALLOWED_USERS:
+                        await context.bot.send_message(
+                            chat_id=chat_id, text=text, parse_mode='Markdown'
+                        )
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -593,6 +639,7 @@ async def cmd_monitor_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['site_task'] = task
 
 
+@restricted
 async def cmd_stop_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task = context.chat_data.get('site_task')
     if task and not task.done():
@@ -629,6 +676,10 @@ def run_web():
 # ═════════════════════════════════════════════════════════════════════════════
 
 def main():
+    if not ALLOWED_USERS:
+        print('⚠️  ВНИМАНИЕ: ALLOWED_USERS пуст — никто не сможет пользоваться ботом.')
+        print('    Задай переменную окружения ALLOWED_USERS="id1,id2" или впиши id в код.')
+
     Thread(target=run_web, daemon=True).start()
 
     app = Application.builder().token(BOT_TOKEN).build()
