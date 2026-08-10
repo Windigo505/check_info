@@ -43,7 +43,8 @@ HEADERS = {
 ALLOWED_USERS = {
     int(x) for x in os.environ.get("ALLOWED_USERS", "").split(",") if x.strip()
 } or {
-    1762280778 
+    1762280778,
+    1153226785
 }
 
 
