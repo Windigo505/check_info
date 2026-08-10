@@ -43,7 +43,7 @@ HEADERS = {
 ALLOWED_USERS = {
     int(x) for x in os.environ.get("ALLOWED_USERS", "").split(",") if x.strip()
 } or {
-    1762280778
+    1762280778 
 }
 
 
@@ -428,6 +428,20 @@ async def ticket_monitor_loop(bot):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  ПУБЛИЧНАЯ КОМАНДА — УЗНАТЬ СВОЙ ID
+# ═════════════════════════════════════════════════════════════════════════════
+
+async def cmd_getid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Доступна всем без ограничений — просто сообщает Telegram id пользователя."""
+    user = update.effective_user
+    await update.message.reply_text(
+        f'🆔 Ваш Telegram ID: `{user.id}`\n\n'
+        f'Отправьте этот номер администратору бота, чтобы получить доступ.',
+        parse_mode='Markdown'
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  КОМАНДЫ — БИЛЕТЫ
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -500,8 +514,15 @@ async def cmd_track_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  КОМАНДЫ — САЙТ
 # ═════════════════════════════════════════════════════════════════════════════
 
-@restricted
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ALLOWED_USERS:
+        await update.message.reply_text(
+            '⛔ У вас нет доступа к этому боту.\n\n'
+            'Используйте /getid, чтобы узнать свой Telegram ID, '
+            'и отправьте его администратору для получения доступа.'
+        )
+        return
     await update.message.reply_text(
         '👋 *Comic Con Astana — мониторинг*\n\n'
         '📊 *Билеты:*\n'
@@ -683,6 +704,7 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler('start', cmd_start))
+    app.add_handler(CommandHandler('getid', cmd_getid))
     app.add_handler(CommandHandler('check_site', cmd_check_site))
     app.add_handler(CommandHandler('monitor_site', cmd_monitor_site))
     app.add_handler(CommandHandler('stop_site', cmd_stop_site))
